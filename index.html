@@ -1,0 +1,543 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
+<title>窓 — まど</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Shippori+Mincho:wght@400;500&display=swap" rel="stylesheet">
+<style>
+  *{ box-sizing:border-box; margin:0; padding:0; }
+  html,body{ height:100%; background:#0c0e11; overflow:hidden; }
+  body{ font-family:"Shippori Mincho", serif; color:#b7b2a7;
+        -webkit-font-smoothing:antialiased; text-rendering:optimizeLegibility; }
+
+  #stage{ position:fixed; inset:0; }
+  canvas#scene{ position:absolute; inset:0; width:100%; height:100%; display:block; }
+
+  /* mode toggle */
+  #modes{ position:absolute; top:clamp(20px,5vmin,40px); left:50%; transform:translateX(-50%);
+    display:flex; gap:0; opacity:0; transition:opacity 2s ease; user-select:none; }
+  body.ready #modes{ opacity:1; }
+  #modes button{ font-family:inherit; background:transparent; border:none; cursor:pointer;
+    color:#7f7b73; font-size:clamp(13px,2.8vmin,16px); letter-spacing:.42em; text-indent:.42em;
+    padding:.4em 1.2em; transition:color .5s; position:relative; }
+  #modes button.on{ color:#e6e1d6; }
+  #modes button.on::after{ content:""; position:absolute; left:50%; bottom:0; transform:translateX(-50%);
+    width:6px; height:6px; border-radius:50%; background:#e6e1d6; opacity:.8; }
+  #modes .sep{ width:1px; align-self:center; height:1em; background:rgba(180,175,165,.3); }
+
+  /* HUD */
+  #hud{ position:absolute; right:clamp(24px,6vmin,56px); bottom:clamp(22px,5.4vmin,46px);
+    text-align:right; line-height:1.5; letter-spacing:.06em; color:#d7d2c7;
+    text-shadow:0 1px 10px rgba(0,0,0,.8); opacity:0; transition:opacity 2s ease; pointer-events:none; }
+  #clock{ font-size:clamp(44px,9.2vmin,80px); font-weight:500; letter-spacing:.04em; }
+  #weather{ font-size:clamp(11px,2.1vmin,14px); color:#b7b2a7; margin-top:.35em; }
+  #place{ font-size:clamp(10px,1.9vmin,12px); color:#8d897f; margin-top:.15em; }
+  body.ready #hud{ opacity:1; }
+
+  #snd{ position:absolute; left:clamp(24px,5.5vmin,52px); bottom:clamp(22px,5.4vmin,46px);
+    width:34px; height:34px; border:none; background:transparent; cursor:pointer;
+    opacity:0; transition:opacity 2s ease,color .3s; color:#cfcabf;
+    display:flex; align-items:center; justify-content:center; }
+  #snd:hover{ color:#fff; }  #snd svg{ width:22px; height:22px; }
+  body.ready #snd{ opacity:1; }
+
+  /* open overlay */
+  #open{ position:absolute; inset:0; z-index:5;
+    background:radial-gradient(120% 90% at 50% 40%, #1b1f25 0%, #0c0e11 70%, #08090b 100%);
+    display:flex; flex-direction:column; align-items:center; justify-content:center;
+    gap:2.2em; transition:opacity 1.6s ease; }
+  #open h1{ font-weight:400; color:#d8d3c8; letter-spacing:.5em; text-indent:.5em;
+    font-size:clamp(30px,9vmin,64px); }
+  #open p{ color:#7f7b73; font-size:clamp(12px,2.6vmin,15px); letter-spacing:.18em;
+    line-height:2; text-align:center; }
+  .choose{ display:flex; gap:1.4em; margin-top:.4em; flex-wrap:wrap; justify-content:center; }
+  .choose button{ font-family:inherit; color:#cdc8bd; background:transparent;
+    border:1px solid rgba(205,200,189,.35); border-radius:999px;
+    padding:.85em 2.2em; font-size:clamp(13px,2.8vmin,16px); letter-spacing:.4em; text-indent:.4em;
+    cursor:pointer; transition:all .5s ease; }
+  .choose button:hover{ background:rgba(205,200,189,.08); border-color:rgba(205,200,189,.7); color:#fff; }
+  #open.hide{ opacity:0; pointer-events:none; }
+
+  @media (prefers-reduced-motion: reduce){
+    #open,#hud,#snd,#modes,.choose button{ transition-duration:.2s; }
+  }
+</style>
+</head>
+<body>
+  <div id="stage">
+    <canvas id="scene"></canvas>
+
+    <div id="modes">
+      <button data-m="out" class="on">外</button>
+      <span class="sep"></span>
+      <button data-m="flame">灯火</button>
+    </div>
+
+    <div id="hud">
+      <div id="clock">--:--</div>
+      <div id="weather">空を読み込んでいます…</div>
+      <div id="place"></div>
+    </div>
+    <button id="snd" aria-label="音のオン・オフ"></button>
+  </div>
+
+  <div id="open">
+    <h1>窓</h1>
+    <p>いま、あなたの空が流れます。<br>食事のかたわらに。</p>
+    <div class="choose">
+      <button data-start="out">外 を み る</button>
+      <button data-start="flame">灯 火 を と も す</button>
+    </div>
+  </div>
+
+<script>
+"use strict";
+/* ============================================================
+   窓 — living scene driven by your local weather
+   modes: out / flame   weather: Open-Meteo   audio: synthesized
+   ============================================================ */
+const REDUCE = matchMedia("(prefers-reduced-motion: reduce)").matches;
+const cv = document.getElementById("scene");
+const ctx = cv.getContext("2d", { alpha:false });
+let W=0,H=0,DPR=1, mode="out";
+let fcv=null, fctx=null;          // offscreen for the flame (so its top can be blurred)
+let grainCv=null, grainPat=null;  // grain texture
+const SUPPORT_FILTER=(()=>{ try{ ctx.filter="blur(1px)"; const ok=(ctx.filter==="blur(1px)"); ctx.filter="none"; return ok; }catch(e){ return false; } })();
+let tcv=null, tctx=null;          // head layer (soft, dissolving top)
+function ensureFCV(){
+  if(!fcv) fcv=document.createElement("canvas");
+  if(fcv.width!==cv.width||fcv.height!==cv.height){ fcv.width=cv.width; fcv.height=cv.height; fctx=fcv.getContext("2d"); }
+  if(!tcv) tcv=document.createElement("canvas");
+  if(tcv.width!==cv.width||tcv.height!==cv.height){ tcv.width=cv.width; tcv.height=cv.height; tctx=tcv.getContext("2d"); }
+}
+function buildGrain(){
+  const N=110; grainCv=document.createElement("canvas"); grainCv.width=N; grainCv.height=N;
+  const g=grainCv.getContext("2d"), img=g.createImageData(N,N), d=img.data;
+  for(let i=0;i<d.length;i+=4){ const v=120+(Math.random()*110-55); d[i]=d[i+1]=d[i+2]=v; d[i+3]=255; }
+  g.putImageData(img,0,0); grainPat=ctx.createPattern(grainCv,"repeat");
+}
+function drawGrain(){
+  if(!grainPat) return;
+  ctx.save();
+  ctx.globalCompositeOperation="overlay"; ctx.globalAlpha=0.12;
+  const ox=(Math.random()*grainCv.width)|0, oy=(Math.random()*grainCv.height)|0;
+  ctx.translate(ox,oy); ctx.fillStyle=grainPat; ctx.fillRect(-ox,-oy,W,H);
+  ctx.restore();
+}
+
+function resize(){
+  DPR=Math.min(window.devicePixelRatio||1,2);
+  W=cv.clientWidth; H=cv.clientHeight;
+  cv.width=Math.round(W*DPR); cv.height=Math.round(H*DPR);
+  ctx.setTransform(DPR,0,0,DPR,0,0);
+  ensureFCV(); if(!grainPat) buildGrain();
+  buildClouds(); buildStars();
+}
+window.addEventListener("resize", resize);
+
+/* ── weather ── */
+const wx={ temp:14,humidity:60,precip:0,cloud:60,wind:2,windDir:200,isDay:1,code:3,place:"",ok:false,snow:false,_lat:null,_lon:null };
+const live={ cloud:60,precip:0,humidity:60,wind:2,windDir:200,daylight:1 };
+function classify(){ const c=wx.code; wx.snow=(c>=71&&c<=77)||c===85||c===86||(wx.precip>0&&wx.temp<=0.5); }
+
+async function loadWeather(lat,lon){
+  const url=`https://api.open-meteo.com/v1/forecast?latitude=${lat}&longitude=${lon}`
+    +`&current=temperature_2m,relative_humidity_2m,precipitation,weather_code,cloud_cover,`
+    +`wind_speed_10m,wind_direction_10m,is_day&timezone=auto`;
+  try{
+    const j=await (await fetch(url)).json(); const c=j.current;
+    wx.temp=c.temperature_2m; wx.humidity=c.relative_humidity_2m; wx.precip=c.precipitation;
+    wx.cloud=c.cloud_cover; wx.wind=c.wind_speed_10m/3.6; wx.windDir=c.wind_direction_10m;
+    wx.isDay=c.is_day; wx.code=c.weather_code; wx.ok=true; classify(); updateHUD();
+  }catch(e){ updateHUD(); }
+}
+function start(){
+  if(navigator.geolocation){
+    navigator.geolocation.getCurrentPosition(
+      p=>{ reverseName(p.coords.latitude,p.coords.longitude); loadWeather(p.coords.latitude,p.coords.longitude); },
+      _=>fallback(), { enableHighAccuracy:false,timeout:8000,maximumAge:600000 });
+  } else fallback();
+  setInterval(()=>{ if(wx._lat!=null) loadWeather(wx._lat,wx._lon); }, 600000);
+}
+function fallback(){ wx._lat=35.68; wx._lon=139.76; wx.place="どこかの街の空"; loadWeather(wx._lat,wx._lon); }
+async function reverseName(lat,lon){ wx._lat=lat; wx._lon=lon;
+  try{ const j=await (await fetch(`https://nominatim.openstreetmap.org/reverse?lat=${lat}&lon=${lon}&format=json&accept-language=ja&zoom=10`)).json();
+    const a=j.address||{}; wx.place=a.city||a.town||a.village||a.county||a.state||""; updateHUD(); }catch(e){}
+}
+
+/* ── HUD ── */
+const codeText=code=>{ if(wx.snow)return"雪";
+  if(code===0)return"快晴"; if(code<=2)return"晴れ"; if(code===3)return"くもり";
+  if(code===45||code===48)return"霧"; if(code>=51&&code<=57)return"霧雨";
+  if(code>=61&&code<=67)return"雨"; if(code>=80&&code<=82)return"にわか雨";
+  if(code>=95)return"雷雨"; return"くもり"; };
+const dirName=d=>["北","北東","東","南東","南","南西","西","北西"][Math.round(((d%360)/45))%8];
+function updateHUD(){
+  document.getElementById("weather").textContent=
+    `${codeText(wx.code)} ・ ${Math.round(wx.temp)}°  風 ${dirName(wx.windDir)} ${wx.wind.toFixed(1)}m/s ・ 湿度 ${Math.round(wx.humidity)}%`;
+  document.getElementById("place").textContent= wx.place? `― ${wx.place} ―`:"";
+}
+function tickClock(){ const d=new Date();
+  document.getElementById("clock").textContent=
+    `${String(d.getHours()).padStart(2,"0")}:${String(d.getMinutes()).padStart(2,"0")}`; }
+
+/* ── helpers ── */
+const lerp=(a,b,t)=>a+(b-a)*t;
+const mix=(a,b,t)=>[lerp(a[0],b[0],t),lerp(a[1],b[1],t),lerp(a[2],b[2],t)];
+const rgb=c=>`rgb(${c[0]|0},${c[1]|0},${c[2]|0})`;
+const clamp=(v,a,b)=>Math.max(a,Math.min(b,v));
+function fnoise(t){ return Math.sin(t)*0.5+Math.sin(t*2.3+1.7)*0.3+Math.sin(t*5.1+0.4)*0.2; }
+
+/* ── sky (out mode) ── */
+const SKY=[
+  {h:0,top:[18,22,30],bot:[30,34,42]},   {h:5,top:[40,46,62],bot:[92,86,92]},
+  {h:7,top:[120,134,150],bot:[206,188,170]}, {h:12,top:[150,168,182],bot:[200,206,206]},
+  {h:17,top:[120,128,140],bot:[214,176,150]}, {h:19,top:[70,68,84],bot:[196,128,108]},
+  {h:21,top:[30,32,46],bot:[58,52,64]}, {h:24,top:[18,22,30],bot:[30,34,42]} ];
+function skyColors(hf){
+  let a=SKY[0],b=SKY[SKY.length-1];
+  for(let i=0;i<SKY.length-1;i++){ if(hf>=SKY[i].h&&hf<=SKY[i+1].h){a=SKY[i];b=SKY[i+1];break;} }
+  const t=(hf-a.h)/(b.h-a.h);
+  let top=mix(a.top,b.top,t),bot=mix(a.bot,b.bot,t);
+  const cl=live.cloud/100;
+  top=mix(top,[150,153,156],cl*0.55); bot=mix(bot,[196,198,196],cl*0.5);
+  return [top,bot];
+}
+let clouds=[];
+function buildClouds(){ clouds=[]; const n=REDUCE?7:14;
+  for(let i=0;i<n;i++) clouds.push({x:Math.random()*1.3-0.15,y:0.05+Math.random()*0.45,
+    s:0.5+Math.random()*1.4,o:0.3+Math.random()*0.5}); }
+let stars=[];
+function buildStars(){ stars=[]; for(let i=0;i<90;i++) stars.push({x:Math.random(),y:Math.random()*0.6,m:Math.random(),tw:Math.random()*6.28}); }
+
+/* ============================================================
+   PARTICLES (out mode): petal / leaf / rain / snow
+   ============================================================ */
+let parts=[], fieldKind="dry";
+const PAL_PETAL=[[233,196,201],[239,212,208],[221,182,192],[244,224,214]];
+const PAL_LEAF =[[150,160,110],[176,150,96],[120,140,100],[160,128,80]];
+function decideKind(){ if(wx.snow) return "snow"; if(live.precip>0.05) return "rain"; return "dry"; }
+function newPart(kind){
+  const p={ x:Math.random()*W, y:Math.random()*-H, z:0.4+Math.random()*0.9,
+    rot:Math.random()*6.28, vr:(Math.random()-0.5)*0.04, phase:Math.random()*6.28, kind };
+  if(kind==="dry"){ p.type=Math.random()<0.55?"petal":"leaf";
+    p.col=(p.type==="petal"?PAL_PETAL:PAL_LEAF)[Math.floor(Math.random()*4)];
+    p.size=(p.type==="petal"?5:7)+Math.random()*5; p.vy=14+Math.random()*16; }
+  else if(kind==="snow"){ p.size=1.4+Math.random()*2.4; p.vy=22+p.z*26; }
+  else { p.len=10+Math.random()*16; p.vy=440; }
+  return p;
+}
+function ensureField(){
+  const kind=decideKind();
+  if(kind!==fieldKind){ fieldKind=kind; parts.length=0; }
+  let want;
+  if(kind==="dry") want=REDUCE?9:18;
+  else if(kind==="snow") want=(REDUCE?16:30)+Math.min(60,live.precip*30);
+  else want=(REDUCE?20:34)+Math.min(90,live.precip*46);
+  while(parts.length<want) parts.push(newPart(kind));
+  if(parts.length>want+24) parts.length=want;
+}
+function drawParts(dt,windX){
+  ensureField();
+  const wind=windX;
+  for(const p of parts){
+    if(p.kind==="rain"){
+      const dx=wind*1.3, dy=p.vy;
+      p.x+=dx*dt*p.z; p.y+=dy*dt*p.z*0.55;
+      if(p.y>H){ p.y=Math.random()*-60; p.x=Math.random()*W; }
+      ctx.strokeStyle=`rgba(205,214,218,${0.22+p.z*0.32})`; ctx.lineWidth=1;
+      ctx.beginPath(); ctx.moveTo(p.x,p.y); ctx.lineTo(p.x+dx*0.03,p.y+p.len*p.z); ctx.stroke();
+    } else if(p.kind==="snow"){
+      p.x+=(wind*0.5+Math.sin(p.y*0.02+p.phase)*8)*dt; p.y+=p.vy*dt;
+      if(p.y>H+6){ p.y=-6; p.x=Math.random()*W; }
+      ctx.fillStyle=`rgba(236,238,240,${0.5+p.z*0.4})`;
+      ctx.beginPath(); ctx.arc(p.x,p.y,p.size,0,6.2832); ctx.fill();
+    } else { // dry: petal / leaf
+      p.rot+=p.vr+wind*0.0006;
+      p.x+=(wind*0.85+Math.sin(p.y*0.012+p.phase)*22)*dt;
+      p.y+=p.vy*dt;
+      if(p.y>H+20){ p.y=-20; p.x=Math.random()*W; }
+      if(p.x<-30) p.x=W+20; if(p.x>W+30) p.x=-20;
+      const a=0.5+p.z*0.4, c=p.col;
+      ctx.save(); ctx.translate(p.x,p.y); ctx.rotate(p.rot+Math.sin(p.phase+p.y*0.01)*0.4);
+      ctx.fillStyle=`rgba(${c[0]},${c[1]},${c[2]},${a})`;
+      if(p.type==="petal"){
+        ctx.beginPath(); ctx.ellipse(0,0,p.size*0.5,p.size,0,0,6.2832); ctx.fill();
+      } else {
+        ctx.beginPath(); ctx.ellipse(0,0,p.size*0.34,p.size,0,0,6.2832); ctx.fill();
+        ctx.strokeStyle=`rgba(80,84,60,${a*0.5})`; ctx.lineWidth=0.8;
+        ctx.beginPath(); ctx.moveTo(0,-p.size); ctx.lineTo(0,p.size); ctx.stroke();
+      }
+      ctx.restore();
+    }
+  }
+}
+
+/* ============================================================
+   FLAME mode
+   ============================================================ */
+let embers=[];
+function weatherBright(){
+  const cloudF=1-live.cloud/100, precipF=1-Math.min(live.precip,4)/4;
+  let b=clamp((1-live.cloud/100*0.6)*(1-Math.min(live.precip,4)/4*0.6),0.16,1);
+  b*= (0.55+0.45*(wx.isDay?1:0));
+  return b;
+}
+function renderFlame(dt,now,windX){
+  const bright=weatherBright();
+  // weather-tinted interior background (brighter & warmer when clear)
+  const dark=[8,8,11], warm=[46,40,36];
+  const base=mix(dark,warm,bright);
+  ctx.fillStyle=rgb(base); ctx.fillRect(0,0,W,H);
+
+  const cx=W*0.5, by=H*0.70;
+  const flick=fnoise(now*0.006);
+  const fAmp=REDUCE?0.4:1;
+  const flameH=H*0.15*(0.85+0.3*bright)*(1+flick*0.14*fAmp);
+  const w=Math.max(8,H*0.022)*(0.9+0.18*flick);
+  // wind: lean grows with wind strength
+  const lean=clamp(windX*0.9,-w*5,w*5)*fAmp
+           + fnoise(now*0.011+5)*w*0.6*(1+live.wind*0.12)*fAmp;
+  const tipx=cx+lean, tipy=by-flameH;
+
+  // glow
+  ctx.save(); ctx.globalCompositeOperation="lighter";
+  const gr=flameH*(1.7+0.2*flick);
+  const g=ctx.createRadialGradient(cx,by-flameH*0.45,2, cx,by-flameH*0.3,gr);
+  g.addColorStop(0,`rgba(255,196,120,${0.42*(0.6+bright*0.6)})`);
+  g.addColorStop(0.4,`rgba(255,150,70,${0.18*(0.5+bright*0.7)})`);
+  g.addColorStop(1,"rgba(255,140,60,0)");
+  ctx.fillStyle=g; ctx.beginPath(); ctx.arc(cx,by-flameH*0.3,gr,0,6.2832); ctx.fill();
+  ctx.restore();
+
+  // ---- flame body drawn offscreen so its top can be softened ----
+  ensureFCV();
+  fctx.setTransform(DPR,0,0,DPR,0,0);
+  fctx.clearRect(0,0,W,H);
+  fctx.globalCompositeOperation="source-over";
+  // outer flame
+  const og=fctx.createLinearGradient(0,by,0,tipy);
+  og.addColorStop(0,"rgba(210,90,30,.95)");
+  og.addColorStop(0.5,"rgba(248,150,40,.95)");
+  og.addColorStop(1,"rgba(255,210,120,.9)");
+  fctx.fillStyle=og;
+  fctx.beginPath();
+  fctx.moveTo(cx-w,by);
+  fctx.bezierCurveTo(cx-w,by-flameH*0.55, tipx-w*0.5,tipy+flameH*0.25, tipx,tipy);
+  fctx.bezierCurveTo(tipx+w*0.5,tipy+flameH*0.25, cx+w,by-flameH*0.55, cx+w,by);
+  fctx.quadraticCurveTo(cx,by+w*0.5, cx-w,by);
+  fctx.fill();
+  // inner flame
+  fctx.globalCompositeOperation="lighter";
+  const iw=w*0.5, ih=flameH*0.66, itx=cx+lean*0.7, ity=by-ih;
+  const ig=fctx.createLinearGradient(0,by,0,ity);
+  ig.addColorStop(0,"rgba(255,160,60,.9)");
+  ig.addColorStop(0.6,"rgba(255,224,150,.95)");
+  ig.addColorStop(1,"rgba(255,248,225,.95)");
+  fctx.fillStyle=ig;
+  fctx.beginPath();
+  fctx.moveTo(cx-iw,by);
+  fctx.bezierCurveTo(cx-iw,by-ih*0.5, itx-iw*0.5,ity+ih*0.3, itx,ity);
+  fctx.bezierCurveTo(itx+iw*0.5,ity+ih*0.3, cx+iw,by-ih*0.5, cx+iw,by);
+  fctx.quadraticCurveTo(cx,by+iw*0.4, cx-iw,by);
+  fctx.fill();
+  // wick ember
+  fctx.fillStyle="rgba(255,180,90,.9)";
+  fctx.beginPath(); fctx.arc(cx,by-2,w*0.28,0,6.2832); fctx.fill();
+
+  // ---- split flame into a feathered HEAD (soft, dissolving) and BASE (defined) ----
+  // copy full flame to the head layer first
+  tctx.setTransform(1,0,0,1,0,0); tctx.clearRect(0,0,tcv.width,tcv.height);
+  tctx.drawImage(fcv,0,0);
+  // keep only the upper part of the head layer, with the very tip faded → dissolves
+  tctx.setTransform(DPR,0,0,DPR,0,0);
+  tctx.globalCompositeOperation="destination-in";
+  const hm=tctx.createLinearGradient(0,tipy-flameH*0.2,0,tipy+flameH*0.62);
+  hm.addColorStop(0,"rgba(0,0,0,0)");
+  hm.addColorStop(0.30,"rgba(0,0,0,0.5)");   // tip only partly kept → melts away
+  hm.addColorStop(0.55,"rgba(0,0,0,1)");
+  hm.addColorStop(1,"rgba(0,0,0,0)");
+  tctx.fillStyle=hm; tctx.fillRect(0,0,W,H);
+  tctx.globalCompositeOperation="source-over";
+  // keep only the lower part of the base layer (feathered, overlaps the head)
+  fctx.globalCompositeOperation="destination-in";
+  const bm=fctx.createLinearGradient(0,tipy+flameH*0.32,0,by);
+  bm.addColorStop(0,"rgba(0,0,0,0)");
+  bm.addColorStop(0.55,"rgba(0,0,0,1)");
+  bm.addColorStop(1,"rgba(0,0,0,1)");
+  fctx.fillStyle=bm; fctx.fillRect(0,0,W,H);
+  fctx.globalCompositeOperation="source-over";
+
+  ctx.save();
+  if(SUPPORT_FILTER){
+    ctx.filter="blur("+Math.max(9,H*0.032)+"px)";   // head: heavily softened
+    ctx.drawImage(tcv,0,0,W,H);
+    ctx.filter="blur("+Math.max(1,H*0.004)+"px)";    // base: barely softened
+    ctx.drawImage(fcv,0,0,W,H);
+    ctx.filter="none";
+  } else {
+    ctx.drawImage(fcv,0,0,W,H);
+    ctx.globalAlpha=0.7; ctx.drawImage(tcv,0,0,W,H); ctx.globalAlpha=1;
+    ctx.globalCompositeOperation="lighter";
+    const pg=ctx.createRadialGradient(tipx,tipy+flameH*0.05,2, tipx,tipy-flameH*0.05,flameH*0.85);
+    pg.addColorStop(0,"rgba(255,205,130,.45)"); pg.addColorStop(1,"rgba(255,170,80,0)");
+    ctx.fillStyle=pg; ctx.beginPath(); ctx.ellipse(tipx,tipy,w*1.6,flameH*0.7,0,0,6.2832); ctx.fill();
+  }
+  ctx.restore();
+
+  // embers rise & drift with wind
+  const spawn=(REDUCE?0.12:0.3)+live.wind*0.05;
+  if(Math.random()<spawn) embers.push({x:tipx+(Math.random()-0.5)*w, y:tipy,
+    vx:windX*0.012+(Math.random()-0.5)*8, vy:-(18+Math.random()*34), life:1, size:1+Math.random()*1.6});
+  ctx.save(); ctx.globalCompositeOperation="lighter";
+  for(let i=embers.length-1;i>=0;i--){ const e=embers[i];
+    e.vy+=6*dt; e.x+=e.vx*dt+windX*0.02*dt; e.y+=e.vy*dt; e.life-=dt*0.5;
+    if(e.life<=0||e.y<-20){ embers.splice(i,1); continue; }
+    ctx.fillStyle=`rgba(255,${150+e.life*80|0},80,${e.life*0.8})`;
+    ctx.beginPath(); ctx.arc(e.x,e.y,e.size*e.life,0,6.2832); ctx.fill();
+  }
+  ctx.restore();
+
+  // gentle vignette
+  const vg=ctx.createRadialGradient(cx,by-flameH*0.4,flameH*0.6, cx,H*0.5,Math.max(W,H)*0.8);
+  vg.addColorStop(0,"rgba(0,0,0,0)"); vg.addColorStop(1,`rgba(0,0,0,${0.55+(1-bright)*0.3})`);
+  ctx.fillStyle=vg; ctx.fillRect(0,0,W,H);
+}
+
+/* ── out mode render ── */
+function renderOut(dt,now,hf,windX){
+  const [top,bot]=skyColors(hf);
+  const g=ctx.createLinearGradient(0,0,0,H); g.addColorStop(0,rgb(top)); g.addColorStop(1,rgb(bot));
+  ctx.fillStyle=g; ctx.fillRect(0,0,W,H);
+  // stars
+  const night=(hf<5.2||hf>20.5), clarity=Math.max(0,1-live.cloud/55);
+  if(night&&clarity>0.02){ for(const s of stars){ const tw=0.5+0.5*Math.sin(now*0.001+s.tw);
+    ctx.globalAlpha=clarity*0.8*s.m*tw; ctx.fillStyle="#e9e7df"; ctx.fillRect(s.x*W,s.y*H,1.4,1.4);} ctx.globalAlpha=1; }
+  // clouds
+  const drift=windX*0.00018;
+  for(const c of clouds){ c.x+=drift*c.s+dt*0.004; if(c.x>1.35)c.x=-0.2; if(c.x<-0.2)c.x=1.35;
+    const ccx=c.x*W,ccy=c.y*H,rad=80+120*c.s, tone=235-live.cloud*0.35, al=c.o*(0.25+live.cloud/170);
+    const cg=ctx.createRadialGradient(ccx,ccy,rad*0.1,ccx,ccy,rad);
+    cg.addColorStop(0,`rgba(${tone},${tone},${tone-4},${al})`); cg.addColorStop(1,`rgba(${tone},${tone},${tone-4},0)`);
+    ctx.fillStyle=cg; ctx.beginPath(); ctx.ellipse(ccx,ccy,rad,rad*0.55,0,0,6.2832); ctx.fill(); }
+  // drifting particles (the wind)
+  drawParts(dt,windX);
+  // soft vignette
+  const vg=ctx.createRadialGradient(W*0.5,H*0.42,Math.min(W,H)*0.25,W*0.5,H*0.5,Math.max(W,H)*0.8);
+  vg.addColorStop(0,"rgba(0,0,0,0)"); vg.addColorStop(1,"rgba(6,8,10,.45)");
+  ctx.fillStyle=vg; ctx.fillRect(0,0,W,H);
+}
+
+/* ── loop ── */
+let last=performance.now(), gustPhase=0;
+function frame(now){
+  const dt=Math.min(50,now-last)/1000; last=now;
+  const k=1-Math.pow(0.5,dt/0.8);
+  live.cloud+=(wx.cloud-live.cloud)*k; live.precip+=(wx.precip-live.precip)*k;
+  live.humidity+=(wx.humidity-live.humidity)*k; live.wind+=(wx.wind-live.wind)*k;
+  live.windDir+=(((wx.windDir-live.windDir+540)%360-180))*k;
+  gustPhase+=dt*(0.4+live.wind*0.08);
+  const gust=1+Math.sin(gustPhase)*0.4+Math.sin(gustPhase*0.37)*0.25;
+  const windX=live.wind*gust*Math.sin(live.windDir*Math.PI/180)*14;
+  const d=new Date(), hf=d.getHours()+d.getMinutes()/60;
+  if(mode==="flame") renderFlame(dt,now,windX); else renderOut(dt,now,hf,windX);
+  drawGrain();
+  if(audio) updateAudio();
+  requestAnimationFrame(frame);
+}
+
+/* ============================================================
+   AUDIO — rain + wind + (flame) fire bed & crackle
+   ============================================================ */
+let audio=null, nodes=null, muted=false, lfo=0;
+function buildNoise(actx,type){ const len=actx.sampleRate*2, buf=actx.createBuffer(1,len,actx.sampleRate), d=buf.getChannelData(0);
+  let lp=0; for(let i=0;i<len;i++){ const wn=Math.random()*2-1;
+    if(type==="brown"){ lp=(lp+0.02*wn)/1.02; d[i]=lp*3.2; } else d[i]=wn; }
+  const s=actx.createBufferSource(); s.buffer=buf; s.loop=true; return s; }
+function initAudio(){
+  const AC=window.AudioContext||window.webkitAudioContext; audio=new AC();
+  const master=audio.createGain(); master.gain.value=0; master.connect(audio.destination);
+  const rain=buildNoise(audio,"white");
+  const rbp=audio.createBiquadFilter(); rbp.type="bandpass"; rbp.frequency.value=1400; rbp.Q.value=0.6;
+  const rlp=audio.createBiquadFilter(); rlp.type="lowpass"; rlp.frequency.value=4200;
+  const rg=audio.createGain(); rg.gain.value=0; rain.connect(rbp); rbp.connect(rlp); rlp.connect(rg); rg.connect(master);
+  const wind=buildNoise(audio,"brown");
+  const wlp=audio.createBiquadFilter(); wlp.type="lowpass"; wlp.frequency.value=420;
+  const wg=audio.createGain(); wg.gain.value=0; wind.connect(wlp); wlp.connect(wg); wg.connect(master);
+  const air=buildNoise(audio,"brown");
+  const alp=audio.createBiquadFilter(); alp.type="lowpass"; alp.frequency.value=180;
+  const ag=audio.createGain(); ag.gain.value=0.015; air.connect(alp); alp.connect(ag); ag.connect(master);
+  const fire=buildNoise(audio,"brown");
+  const flp=audio.createBiquadFilter(); flp.type="lowpass"; flp.frequency.value=700;
+  const fg=audio.createGain(); fg.gain.value=0; fire.connect(flp); flp.connect(fg); fg.connect(master);
+  rain.start(); wind.start(); air.start(); fire.start();
+  master.gain.linearRampToValueAtTime(0.9,audio.currentTime+3);
+  nodes={ master,rg,wg,wlp,rlp,fg }; scheduleCrackle();
+}
+function scheduleCrackle(){
+  const next=120+Math.random()*340;
+  setTimeout(()=>{ crackle(); scheduleCrackle(); }, next);
+}
+function crackle(){
+  if(!audio||audio.state!=="running"||mode!=="flame"||muted) return;
+  const t=audio.currentTime, len=Math.floor(audio.sampleRate*0.04);
+  const buf=audio.createBuffer(1,len,audio.sampleRate), d=buf.getChannelData(0);
+  for(let i=0;i<len;i++) d[i]=(Math.random()*2-1)*Math.pow(1-i/len,2);
+  const src=audio.createBufferSource(); src.buffer=buf;
+  const bp=audio.createBiquadFilter(); bp.type="bandpass"; bp.frequency.value=900+Math.random()*1600; bp.Q.value=2;
+  const g=audio.createGain(); g.gain.value=0.06+Math.random()*0.08;
+  src.connect(bp); bp.connect(g); g.connect(nodes.master); src.start(t);
+}
+function updateAudio(){
+  if(!nodes||audio.state!=="running") return; lfo+=0.016; const t=audio.currentTime;
+  const rainAmt=Math.min(1,live.precip/4);
+  nodes.rg.gain.setTargetAtTime(muted?0:rainAmt*0.5,t,0.5);
+  nodes.rlp.frequency.setTargetAtTime(3000+rainAmt*3000,t,0.5);
+  const windAmt=Math.min(1,live.wind/14), gust=0.5+0.5*Math.sin(lfo*0.5)*Math.sin(lfo*0.13);
+  nodes.wg.gain.setTargetAtTime(muted?0:(0.04+windAmt*0.5)*(0.6+0.6*gust),t,0.4);
+  nodes.wlp.frequency.setTargetAtTime(260+windAmt*620*(0.7+gust*0.6),t,0.4);
+  nodes.fg.gain.setTargetAtTime((muted||mode!=="flame")?0:0.05,t,0.5);
+}
+
+/* ── sound button ── */
+const sndBtn=document.getElementById("snd");
+const ICON_ON=`<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M3 9v6h4l5 4V5L7 9H3z"/><path d="M16 8a5 5 0 0 1 0 8"/><path d="M19 5a9 9 0 0 1 0 14"/></svg>`;
+const ICON_OFF=`<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M3 9v6h4l5 4V5L7 9H3z"/><line x1="16" y1="9" x2="22" y2="15"/><line x1="22" y1="9" x2="16" y2="15"/></svg>`;
+sndBtn.innerHTML=ICON_ON;
+sndBtn.addEventListener("click",()=>{ muted=!muted; sndBtn.innerHTML=muted?ICON_OFF:ICON_ON; });
+
+/* ── mode toggle ── */
+function setMode(m){ mode=m; embers.length=0;
+  document.querySelectorAll("#modes button").forEach(b=>b.classList.toggle("on",b.dataset.m===m)); }
+document.querySelectorAll("#modes button").forEach(b=> b.addEventListener("click",()=>setMode(b.dataset.m)) );
+
+/* ── keep the screen awake while open ── */
+let wakeLock=null, started=false;
+async function requestWakeLock(){
+  try{
+    if("wakeLock" in navigator){
+      wakeLock=await navigator.wakeLock.request("screen");
+      wakeLock.addEventListener("release",()=>{ wakeLock=null; });
+    }
+  }catch(e){ /* blocked or unsupported — fail quietly */ }
+}
+document.addEventListener("visibilitychange",()=>{
+  if(started && document.visibilityState==="visible" && !wakeLock) requestWakeLock();
+});
+
+/* ── boot ── */
+function boot(){ resize(); requestAnimationFrame(frame); tickClock(); setInterval(tickClock,15000); }
+function begin(m){
+  const ov=document.getElementById("open"); ov.classList.add("hide");
+  document.body.classList.add("ready"); setMode(m); started=true;
+  try{ initAudio(); }catch(e){} start(); requestWakeLock();
+  setTimeout(()=>ov.remove(),1700);
+}
+document.querySelectorAll("[data-start]").forEach(b=> b.addEventListener("click",()=>begin(b.dataset.start)) );
+boot();
+</script>
+</body>
+</html>
