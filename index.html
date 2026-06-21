@@ -31,11 +31,22 @@
   /* HUD */
   #hud{ position:absolute; right:clamp(24px,6vmin,56px); bottom:clamp(22px,5.4vmin,46px);
     text-align:right; line-height:1.5; letter-spacing:.06em; color:#d7d2c7;
-    text-shadow:0 1px 10px rgba(0,0,0,.8); opacity:0; transition:opacity 2s ease; pointer-events:none; }
+    text-shadow:0 0 4px rgba(20,26,36,.7), 0 1px 3px rgba(20,26,36,.95), 0 2px 14px rgba(20,26,36,.55); opacity:0; transition:opacity 2s ease; pointer-events:none; }
   #clock{ font-size:clamp(44px,9.2vmin,80px); font-weight:500; letter-spacing:.04em; }
-  #weather{ font-size:clamp(11px,2.1vmin,14px); color:#b7b2a7; margin-top:.35em; }
-  #place{ font-size:clamp(10px,1.9vmin,12px); color:#8d897f; margin-top:.15em; }
+  #weather{ font-size:clamp(11px,2.1vmin,14px); color:#cdc8bd; margin-top:.35em; }
+  #place{ font-size:clamp(10px,1.9vmin,12px); color:#c7c2b7; margin-top:.15em; }
   body.ready #hud{ opacity:1; }
+
+  /* 外モードのみ：天気・地名に座布団（背景＝従来の文字色／文字＝ブルーグレー） */
+  body:not(.flame) #weather,
+  body:not(.flame) #place{
+    display:block; width:fit-content; margin-left:auto;
+    color:#4a5868; text-shadow:none;
+    padding:.18em .62em; border-radius:.5em; }
+  body:not(.flame) #weather{ background:#cdc8bd; }
+  body:not(.flame) #place{ background:#c7c2b7; margin-top:.32em; }
+  /* 外モードの時計はシャドウをほぼ消す */
+  body:not(.flame) #clock{ text-shadow:0 1px 2px rgba(20,26,36,.18); }
 
   #snd{ position:absolute; left:clamp(24px,5.5vmin,52px); bottom:clamp(22px,5.4vmin,46px);
     width:34px; height:34px; border:none; background:transparent; cursor:pointer;
@@ -162,7 +173,10 @@ function start(){
   } else fallback();
   setInterval(()=>{ if(wx._lat!=null) loadWeather(wx._lat,wx._lon); }, 600000);
 }
-function fallback(){ wx._lat=35.68; wx._lon=139.76; wx.place="どこかの街の空"; loadWeather(wx._lat,wx._lon); }
+function fallback(){ wx._lat=35.68; wx._lon=139.76; wx.place="どこかの街の空";
+  // プレビュー用：位置情報が無いときは快晴の空にする（実際の天気は取得しない）
+  wx.temp=22; wx.humidity=45; wx.precip=0; wx.cloud=0;
+  wx.wind=2.2; wx.windDir=200; wx.isDay=1; wx.code=0; wx.ok=true; classify(); updateHUD(); }
 async function reverseName(lat,lon){ wx._lat=lat; wx._lon=lon;
   try{ const j=await (await fetch(`https://nominatim.openstreetmap.org/reverse?lat=${lat}&lon=${lon}&format=json&accept-language=ja&zoom=10`)).json();
     const a=j.address||{}; wx.place=a.city||a.town||a.village||a.county||a.state||""; updateHUD(); }catch(e){}
@@ -203,6 +217,13 @@ function skyColors(hf){
   const t=(hf-a.h)/(b.h-a.h);
   let top=mix(a.top,b.top,t),bot=mix(a.bot,b.bot,t);
   const cl=live.cloud/100;
+  // 晴れた昼は青空へ寄せる（雲が少ないほど・昼の時間ほど強く）
+  const clarity=clamp(1-live.cloud/70,0,1);
+  const dayAmt=clamp((hf-6.5)/1.5,0,1)*clamp((18.5-hf)/1.5,0,1);
+  const blue=clarity*dayAmt;
+  top=mix(top,[74,120,180],blue*0.72);   // 天頂の青
+  bot=mix(bot,[160,194,216],blue*0.55);  // 地平に近い淡い青
+  // 雲が増えるほど灰色のもやへ
   top=mix(top,[150,153,156],cl*0.55); bot=mix(bot,[196,198,196],cl*0.5);
   return [top,bot];
 }
@@ -212,6 +233,44 @@ function buildClouds(){ clouds=[]; const n=REDUCE?7:14;
     s:0.5+Math.random()*1.4,o:0.3+Math.random()*0.5}); }
 let stars=[];
 function buildStars(){ stars=[]; for(let i=0;i<90;i++) stars.push({x:Math.random(),y:Math.random()*0.6,m:Math.random(),tw:Math.random()*6.28}); }
+
+/* ── 雀（外モード・晴れ・昼に時々飛ぶ） ── */
+let birds=[], birdTimer=4;
+const DEBUG_BIRDS=false;   // 確認用フラグ。true で天気・時間・REDUCEを無視して頻繁に飛ぶ（動作確認したいとき用）
+function spawnFlock(){
+  const dir=Math.random()<0.5?1:-1;
+  const n=1+(Math.random()<0.55?0:(Math.random()<0.6?1:2)); // 1〜3羽（多くは1〜2）
+  const baseY=(0.14+Math.random()*0.32)*H;
+  const startX=dir>0?-40:W+40, sp=38+Math.random()*26;     // ゆっくりめ
+  const slope=(Math.random()*2-1)*0.45;                    // 斜め上(-)〜斜め下(+)
+  for(let i=0;i<n;i++){
+    const s=sp*(0.92+Math.random()*0.16);
+    birds.push({ x:startX-dir*(i*26+Math.random()*18), y:baseY+(Math.random()-0.5)*0.05*H,
+      vx:dir*s, vy:s*slope*(0.88+Math.random()*0.24), size:6+Math.random()*4,
+      bob:0.8+Math.random()*0.9, bobPh:Math.random()*6.28, bobAmp:4+Math.random()*5,
+      flapSpeed:0.85+Math.random()*0.5, flapPh:Math.random()*6.28, alpha:0.5+Math.random()*0.22 });
+  }
+}
+function drawBirds(dt,now,windX){
+  const clear=live.cloud<22, dd=new Date(), hf=dd.getHours()+dd.getMinutes()/60, day=hf>6.5&&hf<18.5;
+  const ok = DEBUG_BIRDS ? true : (clear&&day&&!REDUCE);
+  if(ok){ birdTimer-=dt; if(birdTimer<=0){ spawnFlock(); birdTimer = DEBUG_BIRDS ? 1.2 : 9+Math.random()*16; } }
+  for(let i=birds.length-1;i>=0;i--){ const b=birds[i];
+    b.x+=b.vx*dt+windX*0.01*dt; b.y+=b.vy*dt;
+    if(b.x>W+50||b.x<-50||b.y<-60||b.y>H+60){ birds.splice(i,1); continue; }
+    const drawY=b.y+Math.sin(now*0.0012*b.bob+b.bobPh)*b.bobAmp;
+    const tilt=Math.atan2(b.vy,Math.abs(b.vx))*0.35;       // 進行方向へゆるく傾ける
+    const flap=Math.sin(now*0.025*b.flapSpeed+b.flapPh), span=b.size;
+    const h=span*0.6*flap, mid=-h*0.22;   // hが±に振れて ⌒⌒(上向き)↔⌣⌣(上下反転) を交互に
+    ctx.save(); ctx.translate(b.x,drawY); ctx.rotate(tilt);
+    ctx.strokeStyle=`rgba(44,50,58,${b.alpha})`;
+    ctx.lineWidth=Math.max(1,b.size*0.16); ctx.lineCap="round"; ctx.lineJoin="round";
+    ctx.beginPath(); ctx.moveTo(-span,0);
+    ctx.quadraticCurveTo(-span*0.5,-h,0,mid);
+    ctx.quadraticCurveTo(span*0.5,-h,span,0);
+    ctx.stroke(); ctx.restore();
+  }
+}
 
 /* ============================================================
    PARTICLES (out mode): petal / leaf / rain / snow
@@ -289,14 +348,17 @@ function weatherBright(){
 function renderFlame(dt,now,windX){
   const bright=weatherBright();
   // weather-tinted interior background (brighter & warmer when clear)
-  const dark=[8,8,11], warm=[46,40,36];
+  const dark=[8,8,11], warm=[98,86,74];   // 晴れの時は暗闇でなく薄明かりに
   const base=mix(dark,warm,bright);
   ctx.fillStyle=rgb(base); ctx.fillRect(0,0,W,H);
 
   const cx=W*0.5, by=H*0.70;
   const flick=fnoise(now*0.006);
   const fAmp=REDUCE?0.4:1;
-  const flameH=H*0.15*(0.85+0.3*bright)*(1+flick*0.14*fAmp);
+  // 天気で炎の高さを変える（晴れ＝高い / 雨＝小さい）
+  const clearF=clamp(1-live.cloud/100,0,1), rainF=clamp(live.precip/3,0,1);
+  const hFactor=clamp(0.6+clearF*0.7-rainF*0.45,0.42,1.45);
+  const flameH=H*0.15*hFactor*(1+flick*0.14*fAmp);
   const w=Math.max(8,H*0.022)*(0.9+0.18*flick);
   // wind: lean grows with wind strength
   const lean=clamp(windX*0.9,-w*5,w*5)*fAmp
@@ -393,17 +455,23 @@ function renderFlame(dt,now,windX){
   if(Math.random()<spawn) embers.push({x:tipx+(Math.random()-0.5)*w, y:tipy,
     vx:windX*0.012+(Math.random()-0.5)*8, vy:-(18+Math.random()*34), life:1, size:1+Math.random()*1.6});
   ctx.save(); ctx.globalCompositeOperation="lighter";
+  if(SUPPORT_FILTER) ctx.filter="blur("+Math.max(2,H*0.007)+"px)";
   for(let i=embers.length-1;i>=0;i--){ const e=embers[i];
     e.vy+=6*dt; e.x+=e.vx*dt+windX*0.02*dt; e.y+=e.vy*dt; e.life-=dt*0.5;
     if(e.life<=0||e.y<-20){ embers.splice(i,1); continue; }
-    ctx.fillStyle=`rgba(255,${150+e.life*80|0},80,${e.life*0.8})`;
-    ctx.beginPath(); ctx.arc(e.x,e.y,e.size*e.life,0,6.2832); ctx.fill();
+    const g1=150+e.life*80|0, r=Math.max(1.2,e.size*e.life*2.6);
+    const eg=ctx.createRadialGradient(e.x,e.y,0,e.x,e.y,r);
+    eg.addColorStop(0,`rgba(255,${g1},95,${e.life*0.5})`);
+    eg.addColorStop(0.5,`rgba(255,${g1},80,${e.life*0.22})`);
+    eg.addColorStop(1,"rgba(255,150,80,0)");
+    ctx.fillStyle=eg; ctx.beginPath(); ctx.arc(e.x,e.y,r,0,6.2832); ctx.fill();
   }
+  ctx.filter="none";
   ctx.restore();
 
   // gentle vignette
   const vg=ctx.createRadialGradient(cx,by-flameH*0.4,flameH*0.6, cx,H*0.5,Math.max(W,H)*0.8);
-  vg.addColorStop(0,"rgba(0,0,0,0)"); vg.addColorStop(1,`rgba(0,0,0,${0.55+(1-bright)*0.3})`);
+  vg.addColorStop(0,"rgba(0,0,0,0)"); vg.addColorStop(1,`rgba(0,0,0,${0.32+(1-bright)*0.4})`);
   ctx.fillStyle=vg; ctx.fillRect(0,0,W,H);
 }
 
@@ -419,12 +487,14 @@ function renderOut(dt,now,hf,windX){
   // clouds
   const drift=windX*0.00018;
   for(const c of clouds){ c.x+=drift*c.s+dt*0.004; if(c.x>1.35)c.x=-0.2; if(c.x<-0.2)c.x=1.35;
-    const ccx=c.x*W,ccy=c.y*H,rad=80+120*c.s, tone=235-live.cloud*0.35, al=c.o*(0.25+live.cloud/170);
+    const ccx=c.x*W,ccy=c.y*H,rad=80+120*c.s, tone=235-live.cloud*0.35, al=c.o*clamp(live.cloud/100,0,1)*0.85;
     const cg=ctx.createRadialGradient(ccx,ccy,rad*0.1,ccx,ccy,rad);
     cg.addColorStop(0,`rgba(${tone},${tone},${tone-4},${al})`); cg.addColorStop(1,`rgba(${tone},${tone},${tone-4},0)`);
     ctx.fillStyle=cg; ctx.beginPath(); ctx.ellipse(ccx,ccy,rad,rad*0.55,0,0,6.2832); ctx.fill(); }
   // drifting particles (the wind)
   drawParts(dt,windX);
+  // 雀（晴れ・昼に時々）
+  drawBirds(dt,now,windX);
   // soft vignette
   const vg=ctx.createRadialGradient(W*0.5,H*0.42,Math.min(W,H)*0.25,W*0.5,H*0.5,Math.max(W,H)*0.8);
   vg.addColorStop(0,"rgba(0,0,0,0)"); vg.addColorStop(1,"rgba(6,8,10,.45)");
@@ -511,6 +581,7 @@ sndBtn.addEventListener("click",()=>{ muted=!muted; sndBtn.innerHTML=muted?ICON_
 
 /* ── mode toggle ── */
 function setMode(m){ mode=m; embers.length=0;
+  document.body.classList.toggle("flame", m==="flame");
   document.querySelectorAll("#modes button").forEach(b=>b.classList.toggle("on",b.dataset.m===m)); }
 document.querySelectorAll("#modes button").forEach(b=> b.addEventListener("click",()=>setMode(b.dataset.m)) );
 
