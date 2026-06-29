@@ -153,6 +153,11 @@ window.addEventListener("resize", resize);
 const wx={ temp:14,humidity:60,precip:0,cloud:60,wind:2,windDir:200,isDay:1,code:3,place:"",ok:false,snow:false,_lat:null,_lon:null };
 const live={ cloud:60,precip:0,humidity:60,wind:2,windDir:200,daylight:1 };
 function classify(){ const c=wx.code; wx.snow=(c>=71&&c<=77)||c===85||c===86||(wx.precip>0&&wx.temp<=0.5); }
+/* 空の雲量：文字が快晴／晴れのときは天気コードに合わせて視覚的に抑える（実データwx.cloudは保持） */
+function cloudVis(){ if(wx.snow) return wx.cloud;
+  if(wx.code===0) return Math.min(wx.cloud,6);    // 快晴
+  if(wx.code<=2)  return Math.min(wx.cloud,28);   // 晴れ
+  return wx.cloud; }
 
 async function loadWeather(lat,lon){
   const url=`https://api.open-meteo.com/v1/forecast?latitude=${lat}&longitude=${lon}`
@@ -506,7 +511,7 @@ let last=performance.now(), gustPhase=0;
 function frame(now){
   const dt=Math.min(50,now-last)/1000; last=now;
   const k=1-Math.pow(0.5,dt/0.8);
-  live.cloud+=(wx.cloud-live.cloud)*k; live.precip+=(wx.precip-live.precip)*k;
+  live.cloud+=(cloudVis()-live.cloud)*k; live.precip+=(wx.precip-live.precip)*k;
   live.humidity+=(wx.humidity-live.humidity)*k; live.wind+=(wx.wind-live.wind)*k;
   live.windDir+=(((wx.windDir-live.windDir+540)%360-180))*k;
   gustPhase+=dt*(0.4+live.wind*0.08);
