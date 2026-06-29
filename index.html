@@ -155,8 +155,8 @@ const live={ cloud:60,precip:0,humidity:60,wind:2,windDir:200,daylight:1 };
 function classify(){ const c=wx.code; wx.snow=(c>=71&&c<=77)||c===85||c===86||(wx.precip>0&&wx.temp<=0.5); }
 /* 空の雲量：文字が快晴／晴れのときは天気コードに合わせて視覚的に抑える（実データwx.cloudは保持） */
 function cloudVis(){ if(wx.snow) return wx.cloud;
-  if(wx.code===0) return Math.min(wx.cloud,6);    // 快晴
-  if(wx.code<=2)  return Math.min(wx.cloud,28);   // 晴れ
+  if(wx.code===0) return 0;                       // 快晴
+  if(wx.code<=2)  return Math.min(wx.cloud,12);   // 晴れ
   return wx.cloud; }
 
 async function loadWeather(lat,lon){
